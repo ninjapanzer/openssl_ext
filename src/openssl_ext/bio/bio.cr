@@ -14,8 +14,32 @@ class OpenSSL::GETS_BIO
     {% end %}
   end
 
+  # own BIO_METHOD, do not touch stdlib CRYSTAL_BIO.
+  # mutating the shared one breaks every SSL socket on crystal 1.20.
+  # we copy stdlib read/write/create/destroy and set our own ctrl+gets.
   GETS_BIO = begin
-    crystal_bio = OpenSSL::BIO::CRYSTAL_BIO
+    bio_id = LibCrypto.BIO_get_new_index
+    raise OpenSSL::Error.new("BIO_get_new_index") if bio_id == -1
+
+    bio_type = bio_id | LibCrypto::BIO_TYPE_SOURCE_SINK | LibCrypto::BIO_TYPE_DESCRIPTOR
+    biom = LibCrypto.BIO_meth_new(bio_type, "Crystal GETS BIO")
+    raise OpenSSL::Error.new("BIO_meth_new") if biom.null?
+
+    # reuse stdlib callbacks so KTLS builds keep read_ex/write_ex
+    {% if LibCrypto.has_method?(:BIO_meth_set_read_ex) %}
+      LibCrypto.BIO_meth_set_read_ex(biom, ->OpenSSL::BIO.read_ex(LibCrypto::Bio*, UInt8*, LibC::SizeT, LibC::SizeT*))
+    {% else %}
+      LibCrypto.BIO_meth_set_read(biom, ->OpenSSL::BIO.read(LibCrypto::Bio*, UInt8*, LibC::Int))
+    {% end %}
+
+    {% if LibCrypto.has_method?(:BIO_meth_set_write_ex) %}
+      LibCrypto.BIO_meth_set_write_ex(biom, ->OpenSSL::BIO.write_ex(LibCrypto::Bio*, UInt8*, LibC::SizeT, LibC::SizeT*))
+    {% else %}
+      LibCrypto.BIO_meth_set_write(biom, ->OpenSSL::BIO.write(LibCrypto::Bio*, UInt8*, LibC::Int))
+    {% end %}
+
+    LibCrypto.BIO_meth_set_create(biom, ->OpenSSL::BIO.create(LibCrypto::Bio*))
+    LibCrypto.BIO_meth_set_destroy(biom, ->OpenSSL::BIO.destroy(LibCrypto::Bio*))
 
     ctrl = Proc(LibCrypto::Bio*, LibC::Int, LibC::Long, Void*, LibC::Long).new do |bio, cmd, _num, _ptr|
       io = io_for(bio)
@@ -73,16 +97,17 @@ class OpenSSL::GETS_BIO
         bytes
       end
     end
+
     # use our version of ctrl to avoid warnings
     # is also more performant than the standard library version
     {% if compare_versions(LibCrypto::OPENSSL_VERSION, "1.1.0") >= 0 %}
-      LibCrypto.BIO_meth_set_ctrl(crystal_bio, ctrl)
-      LibCrypto.BIO_meth_set_gets(crystal_bio, bgets)
+      LibCrypto.BIO_meth_set_ctrl(biom, ctrl)
+      LibCrypto.BIO_meth_set_gets(biom, bgets)
     {% else %}
-      crystal_bio.value.ctrl = ctrl
-      crystal_bio.value.bgets = bgets
+      biom.value.ctrl = ctrl
+      biom.value.bgets = bgets
     {% end %}
-    crystal_bio
+    biom
   end
 
   @bridge_bio : OpenSSL::BIO? = nil
