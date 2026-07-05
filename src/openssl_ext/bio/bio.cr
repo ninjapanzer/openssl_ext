@@ -14,6 +14,31 @@ class OpenSSL::GETS_BIO
     {% end %}
   end
 
+  # stdlib's OpenSSL::BIO only grew read/write/read_ex/write_ex/create/destroy
+  # class methods in crystal 1.20 (KTLS support). on 1.19.1 that struct barely
+  # exists, so we can't delegate to it here - keep our own minimal copies.
+  {% unless OpenSSL::BIO.has_method?(:read) %}
+    def self.read(bio : LibCrypto::Bio*, buffer : LibC::Char*, len : LibC::Int) : LibC::Int
+      io_for(bio).read(Slice.new(buffer, len)).to_i
+    end
+
+    def self.write(bio : LibCrypto::Bio*, data : LibC::Char*, len : LibC::Int) : LibC::Int
+      io_for(bio).write(Slice.new(data, len))
+      len
+    end
+
+    def self.create(bio : LibCrypto::Bio*) : LibC::Int
+      LibCrypto.BIO_set_shutdown(bio, 1)
+      LibCrypto.BIO_set_init(bio, 1)
+      1
+    end
+
+    def self.destroy(bio : LibCrypto::Bio*) : LibC::Int
+      LibCrypto.BIO_set_data(bio, Pointer(Void).null)
+      1
+    end
+  {% end %}
+
   # own BIO_METHOD, do not touch stdlib CRYSTAL_BIO.
   # mutating the shared one breaks every SSL socket on crystal 1.20.
   # we copy stdlib read/write/create/destroy and set our own ctrl+gets.
@@ -25,21 +50,31 @@ class OpenSSL::GETS_BIO
     biom = LibCrypto.BIO_meth_new(bio_type, "Crystal GETS BIO")
     raise OpenSSL::Error.new("BIO_meth_new") if biom.null?
 
-    # reuse stdlib callbacks so KTLS builds keep read_ex/write_ex
+    # reuse stdlib callbacks so KTLS builds keep read_ex/write_ex.
+    # fall back to our own copies on crystal < 1.20 where OpenSSL::BIO doesn't have them.
     {% if LibCrypto.has_method?(:BIO_meth_set_read_ex) %}
       LibCrypto.BIO_meth_set_read_ex(biom, ->OpenSSL::BIO.read_ex(LibCrypto::Bio*, UInt8*, LibC::SizeT, LibC::SizeT*))
-    {% else %}
+    {% elsif OpenSSL::BIO.has_method?(:read) %}
       LibCrypto.BIO_meth_set_read(biom, ->OpenSSL::BIO.read(LibCrypto::Bio*, UInt8*, LibC::Int))
+    {% else %}
+      LibCrypto.BIO_meth_set_read(biom, ->OpenSSL::GETS_BIO.read(LibCrypto::Bio*, LibC::Char*, LibC::Int))
     {% end %}
 
     {% if LibCrypto.has_method?(:BIO_meth_set_write_ex) %}
       LibCrypto.BIO_meth_set_write_ex(biom, ->OpenSSL::BIO.write_ex(LibCrypto::Bio*, UInt8*, LibC::SizeT, LibC::SizeT*))
-    {% else %}
+    {% elsif OpenSSL::BIO.has_method?(:write) %}
       LibCrypto.BIO_meth_set_write(biom, ->OpenSSL::BIO.write(LibCrypto::Bio*, UInt8*, LibC::Int))
+    {% else %}
+      LibCrypto.BIO_meth_set_write(biom, ->OpenSSL::GETS_BIO.write(LibCrypto::Bio*, LibC::Char*, LibC::Int))
     {% end %}
 
-    LibCrypto.BIO_meth_set_create(biom, ->OpenSSL::BIO.create(LibCrypto::Bio*))
-    LibCrypto.BIO_meth_set_destroy(biom, ->OpenSSL::BIO.destroy(LibCrypto::Bio*))
+    {% if OpenSSL::BIO.has_method?(:create) %}
+      LibCrypto.BIO_meth_set_create(biom, ->OpenSSL::BIO.create(LibCrypto::Bio*))
+      LibCrypto.BIO_meth_set_destroy(biom, ->OpenSSL::BIO.destroy(LibCrypto::Bio*))
+    {% else %}
+      LibCrypto.BIO_meth_set_create(biom, ->OpenSSL::GETS_BIO.create(LibCrypto::Bio*))
+      LibCrypto.BIO_meth_set_destroy(biom, ->OpenSSL::GETS_BIO.destroy(LibCrypto::Bio*))
+    {% end %}
 
     ctrl = Proc(LibCrypto::Bio*, LibC::Int, LibC::Long, Void*, LibC::Long).new do |bio, cmd, _num, _ptr|
       io = io_for(bio)

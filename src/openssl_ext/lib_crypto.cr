@@ -264,6 +264,19 @@ lib LibCrypto
   fun bio_set_shutdown = BIO_set_shutdown(bio : Bio*, shut : LibC::Int)
   fun bio_ctrl = BIO_ctrl(bio : Bio*, cmd : LibC::Int, larg : LibC::Long, parg : Void*) : LibC::Long
 
+  # crystal stdlib only declares these from 1.20 onwards (see openssl/lib_crypto.cr).
+  # our own BIO_METHOD setup in bio.cr needs them on 1.19.1 too.
+  {% unless LibCrypto.has_method?(:BIO_get_new_index) %}
+    fun BIO_get_new_index : LibC::Int
+  {% end %}
+
+  {% unless LibCrypto.has_constant?(:BIO_TYPE_DESCRIPTOR) %}
+    BIO_TYPE_DESCRIPTOR = 0x0100
+  {% end %}
+  {% unless LibCrypto.has_constant?(:BIO_TYPE_SOURCE_SINK) %}
+    BIO_TYPE_SOURCE_SINK = 0x0400
+  {% end %}
+
   fun evp_pkey_new = EVP_PKEY_new : EvpPKey*
   fun evp_pkey_free = EVP_PKEY_free(pkey : EvpPKey*)
   {% if compare_versions(LibCrypto::OPENSSL_VERSION, "3.0.0") >= 0 %}
