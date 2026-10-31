@@ -6,11 +6,31 @@ module OpenSSL::PKey
   end
 
   def self.read(io : IO, passphrase = nil)
+    pkey, is_private = read_evp_pkey(io, passphrase)
+
+    case get_pkey_id(pkey)
+    when LibCrypto::EVP_PKEY_RSA
+      RSA.new io.dup
+    when LibCrypto::EVP_PKEY_EC
+      EC.new io.dup
+    when LibCrypto::EVP_PKEY_ED25519
+      Ed25519.new(pkey, is_private)
+    else
+      LibCrypto.evp_pkey_free(pkey)
+      raise PKeyError.new("unsupported key type", fetched: true)
+    end
+  end
+
+  # Parses a PEM private key, a base64 DER private key or a PEM public key,
+  # in that order, and says whether the key it found is private. It names no
+  # key type, so `Ed25519` can load PEM without requiring `RSA` and `EC`.
+  protected def self.read_evp_pkey(io : IO, passphrase) : {LibCrypto::EvpPKey*, Bool}
     content = Bytes.new(io.size)
     io.read_fully(content)
     io.rewind
 
     cb, cb_u = OpenSSL::PKey.passphrase_callback(passphrase)
+    is_private = true
 
     bio = GETS_BIO.new(io)
     pkey = LibCrypto.pem_read_bio_private_key(bio, nil, cb, cb_u)
@@ -31,22 +51,13 @@ module OpenSSL::PKey
     if pkey.null?
       bio = GETS_BIO.new(io)
       pkey = LibCrypto.pem_read_bio_public_key(bio, nil, cb, cb_u)
+      is_private = false
       io.rewind
     end
 
     raise PKeyError.new if pkey.null?
 
-    id = self.get_pkey_id(pkey)
-
-    case id
-    when LibCrypto::EVP_PKEY_RSA
-      RSA.new io.dup
-    when LibCrypto::EVP_PKEY_EC
-      EC.new io.dup
-    else
-      ret = uninitialized PKey
-      ret
-    end
+    {pkey, is_private}
   end
 
   def self.get_pkey_id(pkey : LibCrypto::EvpPKey*) : Int32
@@ -245,3 +256,7 @@ module OpenSSL::PKey
     {cb, cb_u}
   end
 end
+
+# `PKey.read` names `Ed25519`, so every program that requires this file needs
+# it. It is required last because it subclasses `PKey`, defined above.
+require "./ed25519"

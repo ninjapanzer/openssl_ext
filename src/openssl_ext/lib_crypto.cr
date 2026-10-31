@@ -196,14 +196,16 @@ lib LibCrypto
   NID_ext_key_usage = 126
   NID_key_usage     =  83
 
-  NID_rsaEncryption        =   6
-  NID_dsa                  = 116
-  NID_X9_62_id_ecPublicKey = 408
+  NID_rsaEncryption        =    6
+  NID_dsa                  =  116
+  NID_X9_62_id_ecPublicKey =  408
+  NID_ED25519              = 1087
 
-  EVP_PKEY_NONE = NID_undef
-  EVP_PKEY_RSA  = NID_rsaEncryption
-  EVP_PKEY_DSA  = NID_dsa
-  EVP_PKEY_EC   = NID_X9_62_id_ecPublicKey
+  EVP_PKEY_NONE    = NID_undef
+  EVP_PKEY_RSA     = NID_rsaEncryption
+  EVP_PKEY_DSA     = NID_dsa
+  EVP_PKEY_EC      = NID_X9_62_id_ecPublicKey
+  EVP_PKEY_ED25519 = NID_ED25519
 
   alias PasswordCallback = (LibC::Char*, LibC::Int, LibC::Int, Void*) -> LibC::Int
 
@@ -442,6 +444,23 @@ lib LibCrypto
   fun evp_pkey_derive_init = EVP_PKEY_derive_init(ctx : EVP_PKEY_CTX) : LibC::Int
   fun evp_pkey_derive_set_peer = EVP_PKEY_derive_set_peer(ctx : EVP_PKEY_CTX, peer : EvpPKey*) : LibC::Int
   fun evp_pkey_derive = EVP_PKEY_derive(ctx : EVP_PKEY_CTX, key : UInt8*, keylen : LibC::SizeT*) : LibC::Int
+
+  # Ed25519 (OpenSSL 1.1.1 and later). EdDSA hashes the message itself, so
+  # it signs only through the one-shot EVP_DigestSign and EVP_DigestVerify
+  # with a NULL digest: EVP_SignFinal and the streaming DigestSignUpdate
+  # refuse it (measured against OpenSSL 3.6.3, 2026-10-31).
+  fun evp_pkey_ctx_new_id = EVP_PKEY_CTX_new_id(id : LibC::Int, engine : Engine) : EVP_PKEY_CTX
+  fun evp_pkey_keygen_init = EVP_PKEY_keygen_init(ctx : EVP_PKEY_CTX) : LibC::Int
+  fun evp_pkey_keygen = EVP_PKEY_keygen(ctx : EVP_PKEY_CTX, pkey : EvpPKey**) : LibC::Int
+  fun evp_pkey_new_raw_private_key = EVP_PKEY_new_raw_private_key(type : LibC::Int, engine : Engine, key : UInt8*, keylen : LibC::SizeT) : EvpPKey*
+  fun evp_pkey_new_raw_public_key = EVP_PKEY_new_raw_public_key(type : LibC::Int, engine : Engine, key : UInt8*, keylen : LibC::SizeT) : EvpPKey*
+  fun evp_pkey_get_raw_private_key = EVP_PKEY_get_raw_private_key(pkey : EvpPKey*, key : UInt8*, keylen : LibC::SizeT*) : LibC::Int
+  fun evp_pkey_get_raw_public_key = EVP_PKEY_get_raw_public_key(pkey : EvpPKey*, key : UInt8*, keylen : LibC::SizeT*) : LibC::Int
+  fun evp_digest_sign_init = EVP_DigestSignInit(ctx : EVP_MD_CTX, pctx : EVP_PKEY_CTX*, type : EVP_MD, engine : Engine, pkey : EvpPKey*) : LibC::Int
+  fun evp_digest_sign = EVP_DigestSign(ctx : EVP_MD_CTX, sig : UInt8*, siglen : LibC::SizeT*, tbs : UInt8*, tbslen : LibC::SizeT) : LibC::Int
+  fun evp_digest_verify_init = EVP_DigestVerifyInit(ctx : EVP_MD_CTX, pctx : EVP_PKEY_CTX*, type : EVP_MD, engine : Engine, pkey : EvpPKey*) : LibC::Int
+  fun evp_digest_verify = EVP_DigestVerify(ctx : EVP_MD_CTX, sig : UInt8*, siglen : LibC::SizeT, tbs : UInt8*, tbslen : LibC::SizeT) : LibC::Int
+  fun err_clear_error = ERR_clear_error
 
   # Legacy ECDH function (fallback for older OpenSSL if EVP_PKEY_derive doesn't work)
   alias ECDH_KDF = (Void*, LibC::SizeT, Void*, LibC::SizeT, Void*) -> Void*
